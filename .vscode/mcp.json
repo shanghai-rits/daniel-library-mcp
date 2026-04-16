@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "nyush-library": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["/Users/hanchenyue/Desktop/nyush_library/src/mcp_server.py"]
+    }
+  }
+}

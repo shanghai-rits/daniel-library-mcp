@@ -1,0 +1,26 @@
+type,name,call_start,call_end,floor,x,y,map_file
+Room,"Researcher Room (N607)",N607,N607,6F,6309,1024,6f_base.jpg
+Room,"Scholars Space (N606)",N606,N606,6F,6400,483,6f_base.jpg
+Room,"Group Study Room (N601)",N601,N601,6F,2690,1483,6f_base.jpg
+Shelf,"Main Collection (A - D)",A,D,6F,5071,913,6f_base.jpg
+Shelf,"Main Collection (PN - Z)",PN,Z,6F,1310,874,6f_base.jpg
+Room,"Service Desk (Information)",SERVICE,SERVICE,5F,4071,562,5f_base.jpg
+Room,"Visualization Lab (W516)",W516,W516,5F,1026,3101,5f_base.jpg
+Room,"Academic Commons (N505)",N505,N505,5F,1991,416,5f_base.jpg
+Room,"The Hub (N509)",N509,N509,5F,4893,883,5f_base.jpg
+Room,"N502",N502,N502,5F,1223,805,5f_base.jpg
+Room,"N506",N506,N506,5F,4558,243,5f_base.jpg
+Room,"Interdisciplinary Digital Research Lab (N507)",N507,N507,5F,5605,471,5f_base.jpg
+Room,"High Performance Computer Lab (N508)",N508,N508,5F,5410,699,5f_base.jpg
+Room,"N503",N503,N503,5F,1618,822,5f_base.jpg
+Room,"N504",N504,N504,5F,1629,1122,5f_base.jpg
+Room,"N501",N501,N501,5F,1211,1122,5f_base.jpg
+Shelf,"Main Collection (PN)",PN,PN,6F,1524,300,6f_base.jpg
+Shelf,"Main Collection (ND-PN)",ND,PN,6F,1969,490,6f_base.jpg
+Room,"N605",N605,N605,6F,3645,1485,6f_base.jpg
+Room,"N604",N604,N604,6F,3403,1465,6f_base.jpg
+Room,"N603",N603,N603,6F,3200,1479,6f_base.jpg
+Room,"N602",N602,N602,6F,3010,1485,6f_base.jpg
+Shelf,"Main Collection (JF-NC)",JF,NC,6F,2997,496,6f_base.jpg
+Shelf,"Main Collection (GE-JC)",GE,JC,6F,5779,490,6f_base.jpg
+Shelf,"Main Collection (D-GE)",D,GE,6F,5792,1112,6f_base.jpg
