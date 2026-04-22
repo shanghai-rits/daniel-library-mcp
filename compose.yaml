@@ -1,0 +1,8 @@
+services:
+  daniel-library-mcp:
+    image: ghcr.io/shanghai-rits/daniel-library-mcp:latest
+    build: .
+    container_name: daniel-library-mcp
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
