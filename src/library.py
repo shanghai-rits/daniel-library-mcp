@@ -1,4 +1,5 @@
 import csv
+import io
 from PIL import Image, ImageDraw
 import os
 import difflib
@@ -51,7 +52,8 @@ def find_location(query):
 
 def search_and_draw(query):
     """
-    Main entry point: pin the location on the full floor map and return.
+    Main entry point: pin the location on the full floor map and return the
+    annotated image as JPEG bytes along with a human-readable description.
     """
     location = find_location(query)
     if not location:
@@ -65,6 +67,8 @@ def search_and_draw(query):
             raise FileNotFoundError(f"Base map {base_map_path} not found. Please check the filename.")
 
         img = Image.open(base_map_path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
         draw = ImageDraw.Draw(img)
 
         # Draw a prominent marker on the full map
@@ -72,11 +76,12 @@ def search_and_draw(query):
         draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="red", outline="white", width=15)
         draw.ellipse((x - 15, y - 15, x + 15, y + 15), fill="white")
 
-        output_filename = os.path.join(BASE_DIR, f"full_map_{location['name'].replace(' ', '_')}.jpg")
-        img.save(output_filename)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        image_bytes = buf.getvalue()
 
         msg = f"'{location['name']}' has been marked on the {location['floor']} floor map."
-        return msg, output_filename
+        return msg, image_bytes
 
     except Exception as e:
         raise Exception(f"Failed to generate map: {str(e)}")
