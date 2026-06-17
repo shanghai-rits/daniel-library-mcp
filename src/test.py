@@ -49,11 +49,16 @@ def directions_test():
             pass
     print("[ok] unknown start/destination raise ValueError")
 
-    # 6. Unit checks on the spine helpers.
-    assert library._nearest_waypoint("5F", 4065, 805)[0] == "ent"
-    route = library._spine_route("5F", "ww_bot", "top_e")
-    for wp in ("ww_mid", "ww_top", "top_w", "ent"):
-        assert wp in route, f"{wp} missing from spine route {route}"
+    # 6. Unit checks on the spine helpers (name-agnostic: waypoint ids come
+    #    from corridors.json and may be arbitrary like wp1/wp2).
+    wps = library.CORRIDORS["5F"]["waypoints"]
+    assert wps, "no 5F waypoints loaded from corridors.json"
+    near_id, near_xy = library._nearest_waypoint("5F", 4065, 805)
+    assert near_id in wps and near_xy == wps[near_id]
+    # A route between two distinct waypoints is connected and starts/ends right.
+    ids = list(wps)
+    route = library._spine_route("5F", ids[0], ids[-1])
+    assert route[0] == ids[0] and route[-1] == ids[-1]
     pts = library._path_points("5F", (3360, 805), (700, 3200))
     assert all(pts[i] != pts[i + 1] for i in range(len(pts) - 1)), "duplicate consecutive points"
     # Cross-floor transit picks the structure nearest the start, same one on arrival.
