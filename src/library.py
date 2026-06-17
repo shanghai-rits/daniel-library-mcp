@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from PIL import Image, ImageDraw
 import os
 import re
@@ -9,18 +10,21 @@ from collections import deque
 # Config: absolute path based on project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE_DIR, 'locations.csv')
+CORRIDORS_FILE = os.path.join(BASE_DIR, 'corridors.json')
 
 # A query "looks like a call number" when it is a Library of Congress style
 # class (1-3 letters) optionally followed by a number, e.g. QA76, PN, B105.3.
 CALL_NUMBER_RE = re.compile(r'^[A-Z]{1,3}\d')
 
-# Corridor "spine" per floor: a small hand-authored graph of hallway waypoints
-# (full-res pixel coords) connected by axis-aligned segments. There is no
-# walkability map, so directions snap each location to its nearest waypoint and
-# route along the spine -- this keeps the drawn path inside corridors instead of
-# cutting diagonally through walls. Coordinates are starter values; calibrate
-# them against the floor JPGs (e.g. via calibrate.html) and nudge as needed.
-CORRIDORS = {
+# Corridor "spine" per floor: a graph of hallway waypoints (full-res pixel
+# coords) connected by segments. There is no walkability map, so directions snap
+# each location to its nearest waypoint and route along the spine -- this keeps
+# the drawn path inside corridors instead of cutting diagonally through walls.
+#
+# The spine is authored visually in corridors.html and exported to corridors.json;
+# load_corridors() reads that file at import. The dict below is only a fallback
+# used when corridors.json is missing or unreadable.
+_FALLBACK_CORRIDORS = {
     "5F": {
         "map_file": "5f_base.jpg",
         "waypoints": {
@@ -51,6 +55,37 @@ CORRIDORS = {
         ],
     },
 }
+
+
+def load_corridors():
+    """Load the corridor spine from corridors.json, falling back to the inline
+    dict if the file is missing or malformed.
+
+    JSON shape: {"5F": {"map_file": ..., "waypoints": {id: [x, y]}, "edges": [[a, b]]}}.
+    Waypoint values may be [x, y] lists or {x, y} dicts; both normalize to tuples.
+    """
+    if not os.path.exists(CORRIDORS_FILE):
+        return _FALLBACK_CORRIDORS
+    try:
+        with open(CORRIDORS_FILE, encoding='utf-8') as f:
+            raw = json.load(f)
+    except (ValueError, OSError):
+        return _FALLBACK_CORRIDORS
+
+    out = {}
+    for floor, info in raw.items():
+        wps = {}
+        for wid, v in info.get('waypoints', {}).items():
+            wps[wid] = (v['x'], v['y']) if isinstance(v, dict) else (v[0], v[1])
+        out[floor] = {
+            'map_file': info['map_file'],
+            'waypoints': wps,
+            'edges': [(a, b) for a, b in info.get('edges', [])],
+        }
+    return out or _FALLBACK_CORRIDORS
+
+
+CORRIDORS = load_corridors()
 
 
 def _acronym(name):

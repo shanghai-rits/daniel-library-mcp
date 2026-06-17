@@ -1,0 +1,96 @@
+{
+  "5F": {
+    "map_file": "5f_base.jpg",
+    "waypoints": {
+      "ent": [
+        4065,
+        805
+      ],
+      "top_w": [
+        1500,
+        805
+      ],
+      "top_e": [
+        5400,
+        805
+      ],
+      "ww_top": [
+        300,
+        1540
+      ],
+      "ww_mid": [
+        300,
+        2500
+      ],
+      "ww_bot": [
+        300,
+        3700
+      ],
+      "nrow": [
+        3360,
+        1497
+      ]
+    },
+    "edges": [
+      [
+        "ent",
+        "top_w"
+      ],
+      [
+        "ent",
+        "top_e"
+      ],
+      [
+        "ent",
+        "nrow"
+      ],
+      [
+        "top_w",
+        "ww_top"
+      ],
+      [
+        "ww_top",
+        "ww_mid"
+      ],
+      [
+        "ww_mid",
+        "ww_bot"
+      ]
+    ]
+  },
+  "6F": {
+    "map_file": "6f_base.jpg",
+    "waypoints": {
+      "stair": [
+        770,
+        900
+      ],
+      "main": [
+        4000,
+        900
+      ],
+      "gsr": [
+        3100,
+        1483
+      ],
+      "scholars": [
+        6400,
+        700
+      ]
+    },
+    "edges": [
+      [
+        "stair",
+        "main"
+      ],
+      [
+        "main",
+        "gsr"
+      ],
+      [
+        "main",
+        "scholars"
+      ]
+    ]
+  }
+}

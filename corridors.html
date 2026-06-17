@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>NYUSH Library - Corridor / Spine Editor</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; display: flex; height: 100vh; margin: 0; background: #1a1a1a; color: white; }
+  #sidebar { width: 360px; background: #2c3e50; padding: 20px; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.5); overflow-y: auto; }
+  #main { flex-grow: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; background: #34495e; position: relative; }
+  canvas { max-width: 100%; max-height: 100%; object-fit: contain; background: white; cursor: crosshair; }
+
+  h3 { margin: 0 0 10px; }
+  .controls { background: #34495e; padding: 12px; border-radius: 8px; margin-bottom: 10px; }
+  label { font-size: 12px; display: block; margin-bottom: 4px; }
+  select, input { width: 100%; padding: 6px; box-sizing: border-box; }
+  button { width: 100%; padding: 10px; margin: 5px 0; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+  button:hover { opacity: 0.85; }
+  .btn-mode { background: #8e44ad; color: white; }
+  .btn-mode.active { background: #27ae60; }
+  .btn-import { background: #f39c12; color: white; }
+  .btn-export { background: #2980b9; color: white; }
+  .btn-clear { background: #c0392b; color: white; }
+
+  .hint { font-size: 12px; color: #bdc3c7; line-height: 1.5; background: #1a252f; padding: 10px; border-radius: 4px; margin-bottom: 10px; }
+  .hint b { color: #ecf0f1; }
+  #lists { flex-grow: 1; overflow-y: auto; }
+  .item { background: #1a252f; padding: 7px 10px; margin-bottom: 6px; border-radius: 4px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .item .del { color: #e74c3c; cursor: pointer; font-weight: bold; }
+  .item.sel { outline: 2px solid #27ae60; }
+  .section-title { font-size: 12px; text-transform: uppercase; color: #95a5a6; margin: 12px 0 6px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Corridor / Spine Editor</h3>
+
+  <div class="controls">
+    <label>Floor map:</label>
+    <select id="mapFile" onchange="switchFloor()">
+      <option value="5f_base.jpg">5th Floor (5F)</option>
+      <option value="6f_base.jpg">6th Floor (6F)</option>
+    </select>
+  </div>
+
+  <div class="hint">
+    <b>Add waypoint:</b> click empty map space.<br>
+    <b>Add/remove edge:</b> click <i>Edge mode</i>, then click two waypoints.<br>
+    <b>Move waypoint:</b> drag it.<br>
+    <b>Delete waypoint:</b> ✖ in the list (also removes its edges).
+  </div>
+
+  <button id="edgeBtn" class="btn-mode" onclick="toggleEdgeMode()">Edge mode: OFF</button>
+
+  <div class="controls">
+    <label>Import corridors.json (optional):</label>
+    <button class="btn-import" onclick="document.getElementById('fileInput').click()">Upload corridors.json</button>
+    <input type="file" id="fileInput" hidden accept=".json" onchange="importJSON(this)">
+  </div>
+
+  <div id="lists">
+    <div class="section-title">Waypoints (<span id="wpCount">0</span>)</div>
+    <div id="wp-list"></div>
+    <div class="section-title">Edges (<span id="edgeCount">0</span>)</div>
+    <div id="edge-list"></div>
+  </div>
+
+  <button class="btn-clear" onclick="clearFloor()">Clear this floor</button>
+  <button class="btn-export" onclick="exportJSON()">Download corridors.json</button>
+</div>
+
+<div id="main">
+  <canvas id="canvas"></canvas>
+</div>
+
+<script>
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const mapSelect = document.getElementById('mapFile');
+  let mapImg = new Image();
+
+  // data[mapFile] = { waypoints: {id:{x,y}}, edges: [[a,b],...], seq: int }
+  const data = {
+    '5f_base.jpg': { waypoints: {}, edges: [], seq: 0 },
+    '6f_base.jpg': { waypoints: {}, edges: [], seq: 0 },
+  };
+
+  let edgeMode = false;
+  let edgePick = null;     // first waypoint id chosen in edge mode
+  let dragId = null;       // waypoint being dragged
+  const HIT = 55;          // pixel radius for clicking a waypoint (full-res)
+
+  function floor() { return data[mapSelect.value]; }
+
+  function loadMap() {
+    mapImg.src = mapSelect.value;
+    mapImg.onload = () => { canvas.width = mapImg.width; canvas.height = mapImg.height; draw(); };
+  }
+
+  function switchFloor() { edgePick = null; loadMap(); refresh(); }
+
+  function toMapCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.round((e.clientX - rect.left) * (canvas.width / rect.width)),
+      y: Math.round((e.clientY - rect.top) * (canvas.height / rect.height)),
+    };
+  }
+
+  function waypointAt(x, y) {
+    const wps = floor().waypoints;
+    let best = null, bestD = HIT * HIT;
+    for (const id in wps) {
+      const d = (wps[id].x - x) ** 2 + (wps[id].y - y) ** 2;
+      if (d <= bestD) { bestD = d; best = id; }
+    }
+    return best;
+  }
+
+  function toggleEdgeMode() {
+    edgeMode = !edgeMode; edgePick = null;
+    const b = document.getElementById('edgeBtn');
+    b.textContent = 'Edge mode: ' + (edgeMode ? 'ON' : 'OFF');
+    b.classList.toggle('active', edgeMode);
+    draw();
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    const { x, y } = toMapCoords(e);
+    const hit = waypointAt(x, y);
+
+    if (edgeMode) {
+      if (!hit) return;
+      if (edgePick === null) { edgePick = hit; }
+      else if (edgePick === hit) { edgePick = null; }
+      else { toggleEdge(edgePick, hit); edgePick = null; }
+      refresh();
+      return;
+    }
+
+    if (hit) { dragId = hit; return; }    // start dragging existing waypoint
+
+    // otherwise add a new waypoint
+    const f = floor();
+    const id = 'wp' + (++f.seq);
+    f.waypoints[id] = { x, y };
+    refresh();
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (dragId === null) return;
+    const { x, y } = toMapCoords(e);
+    floor().waypoints[dragId] = { x, y };
+    draw();
+  });
+  window.addEventListener('mouseup', () => { if (dragId !== null) { dragId = null; renderLists(); } });
+
+  function toggleEdge(a, b) {
+    const edges = floor().edges;
+    const i = edges.findIndex(([p, q]) => (p === a && q === b) || (p === b && q === a));
+    if (i >= 0) edges.splice(i, 1); else edges.push([a, b]);
+  }
+
+  function deleteWaypoint(id) {
+    const f = floor();
+    delete f.waypoints[id];
+    f.edges = f.edges.filter(([a, b]) => a !== id && b !== id);
+    if (edgePick === id) edgePick = null;
+    refresh();
+  }
+
+  function clearFloor() {
+    if (!confirm('Clear all waypoints and edges on this floor?')) return;
+    const f = floor(); f.waypoints = {}; f.edges = []; f.seq = 0; edgePick = null;
+    refresh();
+  }
+
+  function refresh() { renderLists(); draw(); }
+
+  function draw() {
+    if (!mapImg.complete || !mapImg.width) return;
+    ctx.drawImage(mapImg, 0, 0);
+    const f = floor();
+
+    // edges
+    ctx.strokeStyle = '#FF8800'; ctx.lineWidth = 12;
+    f.edges.forEach(([a, b]) => {
+      const p = f.waypoints[a], q = f.waypoints[b];
+      if (!p || !q) return;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    });
+
+    // waypoints
+    for (const id in f.waypoints) {
+      const { x, y } = f.waypoints[id];
+      ctx.fillStyle = (id === edgePick) ? '#27ae60' : '#e74c3c';
+      ctx.beginPath(); ctx.arc(x, y, 32, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'white'; ctx.lineWidth = 8; ctx.stroke();
+      ctx.fillStyle = 'black'; ctx.font = 'bold 40px Arial';
+      ctx.fillText(id, x + 42, y + 14);
+    }
+  }
+
+  function renderLists() {
+    const f = floor();
+    const wpIds = Object.keys(f.waypoints);
+    document.getElementById('wpCount').textContent = wpIds.length;
+    document.getElementById('edgeCount').textContent = f.edges.length;
+
+    document.getElementById('wp-list').innerHTML = wpIds.map(id => `
+      <div class="item ${id === edgePick ? 'sel' : ''}">
+        <span><b>${id}</b> <small>(${f.waypoints[id].x}, ${f.waypoints[id].y})</small></span>
+        <span class="del" onclick="deleteWaypoint('${id}')">✖</span>
+      </div>`).join('');
+
+    document.getElementById('edge-list').innerHTML = f.edges.map(([a, b], i) => `
+      <div class="item">
+        <span>${a} — ${b}</span>
+        <span class="del" onclick="removeEdgeAt(${i})">✖</span>
+      </div>`).join('');
+  }
+
+  function removeEdgeAt(i) { floor().edges.splice(i, 1); refresh(); }
+
+  function importJSON(input) {
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const obj = JSON.parse(e.target.result);
+      for (const mf of ['5f_base.jpg', '6f_base.jpg']) {
+        const src = obj[floorKey(mf)] || obj[mf];
+        if (!src) continue;
+        const wps = {}; let seq = 0;
+        for (const id in src.waypoints) {
+          const v = src.waypoints[id];
+          wps[id] = Array.isArray(v) ? { x: v[0], y: v[1] } : { x: v.x, y: v.y };
+          const n = parseInt((id.match(/\d+/) || [0])[0]); if (n > seq) seq = n;
+        }
+        data[mf] = { waypoints: wps, edges: (src.edges || []).map(e => [e[0], e[1]]), seq };
+      }
+      refresh();
+    };
+    reader.readAsText(file);
+  }
+
+  function floorKey(mf) { return mf.split('f')[0].toUpperCase() + 'F'; }   // "5f_base.jpg" -> "5F"
+
+  function exportJSON() {
+    const out = {};
+    for (const mf of ['5f_base.jpg', '6f_base.jpg']) {
+      const f = data[mf];
+      const waypoints = {};
+      for (const id in f.waypoints) waypoints[id] = [f.waypoints[id].x, f.waypoints[id].y];
+      out[floorKey(mf)] = { map_file: mf, waypoints, edges: f.edges.map(([a, b]) => [a, b]) };
+    }
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'corridors.json'; a.click();
+  }
+
+  loadMap();
+</script>
+</body>
+</html>
