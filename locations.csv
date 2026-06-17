@@ -1,26 +1,65 @@
 type,name,call_start,call_end,floor,x,y,map_file
 Room,"Researcher Room (N607)",N607,N607,6F,6309,1024,6f_base.jpg
 Room,"Scholars Space (N606)",N606,N606,6F,6400,483,6f_base.jpg
+Room,"Scholars Space Room (N606A)",N606A,N606A,6F,6290,510,6f_base.jpg
+Room,"Scholars Space Room (N606B)",N606B,N606B,6F,6290,748,6f_base.jpg
+Room,"Scholars Space Room (N606C)",N606C,N606C,6F,6288,800,6f_base.jpg
+Room,"Scholars Space Room (N606D)",N606D,N606D,6F,6780,510,6f_base.jpg
+Room,"Scholars Space Room (N606E)",N606E,N606E,6F,6780,753,6f_base.jpg
 Room,"Group Study Room (N601)",N601,N601,6F,2690,1483,6f_base.jpg
+Room,"Group Study Room (N602)",N602,N602,6F,3010,1485,6f_base.jpg
+Room,"Group Study Room (N603)",N603,N603,6F,3200,1479,6f_base.jpg
+Room,"Group Study Room (N604)",N604,N604,6F,3403,1465,6f_base.jpg
+Room,"Group Study Room (N605)",N605,N605,6F,3645,1485,6f_base.jpg
 Shelf,"Main Collection (A - D)",A,D,6F,5071,913,6f_base.jpg
+Shelf,"Main Collection (D - GE)",D,GE,6F,5792,1112,6f_base.jpg
+Shelf,"Main Collection (GE - JC)",GE,JC,6F,5779,490,6f_base.jpg
+Shelf,"Main Collection (JF - NC)",JF,NC,6F,2997,496,6f_base.jpg
+Shelf,"Main Collection (ND - PN)",ND,PN,6F,1969,490,6f_base.jpg
+Shelf,"Main Collection (PN)",PN,PN,6F,1524,300,6f_base.jpg
 Shelf,"Main Collection (PN - Z)",PN,Z,6F,1310,874,6f_base.jpg
 Room,"Service Desk (Information)",SERVICE,SERVICE,5F,4071,562,5f_base.jpg
+Room,"Entrance & Exit",ENTRANCE,ENTRANCE,5F,3360,805,5f_base.jpg
 Room,"Visualization Lab (W516)",W516,W516,5F,1026,3101,5f_base.jpg
 Room,"Academic Commons (N505)",N505,N505,5F,1991,416,5f_base.jpg
 Room,"The Hub (N509)",N509,N509,5F,4893,883,5f_base.jpg
+Room,"N501",N501,N501,5F,1211,1122,5f_base.jpg
 Room,"N502",N502,N502,5F,1223,805,5f_base.jpg
-Room,"N506",N506,N506,5F,4558,243,5f_base.jpg
-Room,"Interdisciplinary Digital Research Lab (N507)",N507,N507,5F,5605,471,5f_base.jpg
-Room,"High Performance Computer Lab (N508)",N508,N508,5F,5410,699,5f_base.jpg
 Room,"N503",N503,N503,5F,1618,822,5f_base.jpg
 Room,"N504",N504,N504,5F,1629,1122,5f_base.jpg
-Room,"N501",N501,N501,5F,1211,1122,5f_base.jpg
-Shelf,"Main Collection (PN)",PN,PN,6F,1524,300,6f_base.jpg
-Shelf,"Main Collection (ND-PN)",ND,PN,6F,1969,490,6f_base.jpg
-Room,"N605",N605,N605,6F,3645,1485,6f_base.jpg
-Room,"N604",N604,N604,6F,3403,1465,6f_base.jpg
-Room,"N603",N603,N603,6F,3200,1479,6f_base.jpg
-Room,"N602",N602,N602,6F,3010,1485,6f_base.jpg
-Shelf,"Main Collection (JF-NC)",JF,NC,6F,2997,496,6f_base.jpg
-Shelf,"Main Collection (GE-JC)",GE,JC,6F,5779,490,6f_base.jpg
-Shelf,"Main Collection (D-GE)",D,GE,6F,5792,1112,6f_base.jpg
+Room,"Course Reserves & Media (N506)",N506,N506,5F,4558,243,5f_base.jpg
+Room,"Interdisciplinary Digital Research Lab (N507)",N507,N507,5F,5605,471,5f_base.jpg
+Room,"N507A",N507A,N507A,5F,5945,510,5f_base.jpg
+Room,"N507B",N507B,N507B,5F,5898,935,5f_base.jpg
+Room,"High Performance Computer Lab (N508)",N508,N508,5F,5410,699,5f_base.jpg
+Room,"N510",N510,N510,5F,5325,1497,5f_base.jpg
+Room,"N511",N511,N511,5F,5104,1497,5f_base.jpg
+Room,"N512",N512,N512,5F,4930,1497,5f_base.jpg
+Room,"N513",N513,N513,5F,4662,1497,5f_base.jpg
+Room,"N514",N514,N514,5F,4464,1497,5f_base.jpg
+Room,"N515",N515,N515,5F,3611,1497,5f_base.jpg
+Room,"N516",N516,N516,5F,3390,1497,5f_base.jpg
+Room,"N517",N517,N517,5F,3216,1497,5f_base.jpg
+Room,"N518",N518,N518,5F,3034,1497,5f_base.jpg
+Room,"N519",N519,N519,5F,2790,1485,5f_base.jpg
+Room,"Discovery Lab (W501)",W501,W501,5F,960,1540,5f_base.jpg
+Room,"W502",W502,W502,5F,1048,1960,5f_base.jpg
+Room,"W503",W503,W503,5F,848,1960,5f_base.jpg
+Room,"W504",W504,W504,5F,640,1960,5f_base.jpg
+Room,"W505",W505,W505,5F,472,1960,5f_base.jpg
+Room,"Curiosity Lab (W506)",W506,W506,5F,212,1840,5f_base.jpg
+Room,"Active Learning Classroom (W507)",W507,W507,5F,840,2652,5f_base.jpg
+Room,"W508",W508,W508,5F,248,2228,5f_base.jpg
+Room,"W509",W509,W509,5F,472,2228,5f_base.jpg
+Room,"W510",W510,W510,5F,660,2228,5f_base.jpg
+Room,"W511",W511,W511,5F,848,2228,5f_base.jpg
+Room,"W512",W512,W512,5F,1048,2228,5f_base.jpg
+Room,"W513",W513,W513,5F,248,2448,5f_base.jpg
+Room,"W514",W514,W514,5F,248,2712,5f_base.jpg
+Room,"W515",W515,W515,5F,248,2812,5f_base.jpg
+Room,"W517",W517,W517,5F,248,3212,5f_base.jpg
+Room,"One Button Studio (W518)",W518,W518,5F,272,3380,5f_base.jpg
+Room,"XR Space (W519)",W519,W519,5F,992,3688,5f_base.jpg
+Room,"Storage Room (W520)",W520,W520,5F,1132,3960,5f_base.jpg
+Room,"Sound Box (W521)",W521,W521,5F,872,3960,5f_base.jpg
+Room,"Digital Studio (W522)",W522,W522,5F,440,3780,5f_base.jpg
