@@ -475,12 +475,15 @@ def get_directions(destination, start=None):
         msg = f"You're already at '{dest['name']}' on the {d_floor} floor."
         return msg, [(d_floor, img)]
 
-    # Same floor: a single routed map.
+    # Same floor: a single routed map. State plainly that the trip stays on one
+    # floor so the answer never invents a stairs/elevator step.
     if s_floor == d_floor:
         pts = _path_points(s_floor, s_xy, d_xy)
         img = _draw_route(CORRIDORS[s_floor]["map_file"], pts)
-        msg = (f"Directions from '{src['name']}' to '{dest['name']}' on the "
-               f"{s_floor} floor. Green = start, red = destination.")
+        msg = (f"'{src['name']}' and '{dest['name']}' are both on the {s_floor} "
+               f"floor, so this is a single-floor walk -- no stairs or elevator "
+               f"and no floor change are needed. Follow the route on the {s_floor} "
+               f"map: green marker = start, red marker = destination.")
         return msg, [(s_floor, img)]
 
     # Cross floor: route start -> nearest transit, then transit -> destination.
