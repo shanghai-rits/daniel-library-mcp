@@ -122,6 +122,10 @@ def find_location(query):
     with open(DATA_FILE, mode='r', encoding='utf-8-sig') as f:
         rows = list(csv.DictReader(f))
 
+    # Transit rows (stairs/elevator) are routing infrastructure, not lookup
+    # targets -- exclude them so a query never resolves to a stairwell.
+    rows = [r for r in rows if r['type'].lower() != 'transit']
+
     best_match = None
     highest_score = 0
 
