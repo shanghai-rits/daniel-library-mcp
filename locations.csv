@@ -1,4 +1,6 @@
 type,name,call_start,call_end,floor,x,y,map_file
+Room,"Stairs to 6F",STAIRS,STAIRS,5F,820,900,5f_base.jpg
+Room,"Stairs to 5F",STAIRS,STAIRS,6F,770,900,6f_base.jpg
 Room,"Researcher Room (N607)",N607,N607,6F,6309,1024,6f_base.jpg
 Room,"Scholars Space (N606)",N606,N606,6F,6400,483,6f_base.jpg
 Room,"Scholars Space Room (N606A)",N606A,N606A,6F,6290,510,6f_base.jpg
