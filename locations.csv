@@ -1,4 +1,10 @@
 type,name,call_start,call_end,floor,x,y,map_file
+Transit,"Main Stairs (by The Hub)",STAIRS_MAIN,STAIRS_MAIN,5F,4475,950,5f_base.jpg
+Transit,"Main Stairs (by The Hub)",STAIRS_MAIN,STAIRS_MAIN,6F,4450,1000,6f_base.jpg
+Transit,"West Stairs",STAIRS_WEST,STAIRS_WEST,5F,770,950,5f_base.jpg
+Transit,"West Stairs",STAIRS_WEST,STAIRS_WEST,6F,770,900,6f_base.jpg
+Transit,"Elevator",ELEVATOR,ELEVATOR,5F,2565,950,5f_base.jpg
+Transit,"Elevator",ELEVATOR,ELEVATOR,6F,2355,520,6f_base.jpg
 Room,"Researcher Room (N607)",N607,N607,6F,6309,1024,6f_base.jpg
 Room,"Scholars Space (N606)",N606,N606,6F,6400,483,6f_base.jpg
 Room,"Scholars Space Room (N606A)",N606A,N606A,6F,6290,510,6f_base.jpg
@@ -19,7 +25,7 @@ Shelf,"Main Collection (ND - PN)",ND,PN,6F,1969,490,6f_base.jpg
 Shelf,"Main Collection (PN)",PN,PN,6F,1524,300,6f_base.jpg
 Shelf,"Main Collection (PN - Z)",PN,Z,6F,1310,874,6f_base.jpg
 Room,"Service Desk (Information)",SERVICE,SERVICE,5F,4071,562,5f_base.jpg
-Room,"Entrance & Exit",ENTRANCE,ENTRANCE,5F,3360,805,5f_base.jpg
+Room,"Entrance & Exit",ENTRANCE,ENTRANCE,5F,4065,1270,5f_base.jpg
 Room,"Visualization Lab (W516)",W516,W516,5F,1026,3101,5f_base.jpg
 Room,"Academic Commons (N505)",N505,N505,5F,1991,416,5f_base.jpg
 Room,"The Hub (N509)",N509,N509,5F,4893,883,5f_base.jpg
