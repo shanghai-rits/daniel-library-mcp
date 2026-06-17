@@ -24,18 +24,17 @@ CORRIDORS = {
     "5F": {
         "map_file": "5f_base.jpg",
         "waypoints": {
-            "ent": (3360, 805),     # at the Entrance & Exit
+            "ent": (4065, 805),     # top corridor, above the Entrance & Exit door
             "top_w": (1500, 805),   # west end of the top corridor
             "top_e": (5400, 805),   # east end of the top corridor
-            "stair": (820, 900),    # near the 5F staircase
-            "ww_top": (900, 1540),  # west wing, top
-            "ww_mid": (700, 2228),  # west wing, middle (W508-W512 row)
-            "ww_bot": (700, 3200),  # west wing, bottom
+            "ww_top": (300, 1540),  # west wing, top of the left-edge corridor
+            "ww_mid": (300, 2500),  # west wing, middle (W508-W517 column)
+            "ww_bot": (300, 3700),  # west wing, bottom (W518/W522 row)
             "nrow": (3360, 1497),   # N51x classroom row
         },
         "edges": [
             ("ent", "top_w"), ("ent", "top_e"), ("ent", "nrow"),
-            ("top_w", "stair"), ("top_w", "ww_top"),
+            ("top_w", "ww_top"),
             ("ww_top", "ww_mid"), ("ww_mid", "ww_bot"),
         ],
     },
@@ -273,18 +272,33 @@ def _draw_route(map_file, points, start_color="green", end_color="red"):
     return buf.getvalue()
 
 
-def _stairs_on(floor):
-    """Return the locations.csv row for the stairs on `floor`, or None.
+def _transit_options(floor):
+    """Return the list of inter-floor transit rows (stairs/elevator) on `floor`.
 
-    Stairs share the call id "STAIRS" on both floors, so resolution is by floor.
+    Transit points are tagged type=Transit in locations.csv and paired across
+    floors by their call id (e.g. STAIRS_CENTRAL, ELEVATOR).
     """
     if not os.path.exists(DATA_FILE):
-        return None
+        return []
     with open(DATA_FILE, mode='r', encoding='utf-8-sig') as f:
-        for row in csv.DictReader(f):
-            if row['call_start'].upper() == 'STAIRS' and row['floor'] == floor:
-                return row
-    return None
+        return [r for r in csv.DictReader(f)
+                if r['type'].lower() == 'transit' and r['floor'] == floor]
+
+
+def _nearest_transit(from_floor, to_floor, x, y):
+    """Pick the transit structure (stairs/elevator) nearest (x, y) on
+    `from_floor`, returning (from_row, to_row) for the same structure on the
+    destination floor. Returns (None, None) if none is available on both floors.
+    """
+    starts = _transit_options(from_floor)
+    ends = {r['call_start']: r for r in _transit_options(to_floor)}
+    candidates = [(s, ends[s['call_start']]) for s in starts if s['call_start'] in ends]
+    if not candidates:
+        return None, None
+    return min(
+        candidates,
+        key=lambda pair: (int(pair[0]['x']) - x) ** 2 + (int(pair[0]['y']) - y) ** 2,
+    )
 
 
 def get_directions(destination, start=None):
@@ -326,25 +340,28 @@ def get_directions(destination, start=None):
                f"{s_floor} floor. Green = start, red = destination.")
         return msg, [(s_floor, img)]
 
-    # Cross floor: route start -> stairs, then stairs -> destination.
-    s_stair = _stairs_on(s_floor)
-    d_stair = _stairs_on(d_floor)
-    if not s_stair or not d_stair:
+    # Cross floor: route start -> nearest transit, then transit -> destination.
+    # The transit structure (stairs/elevator) is chosen by distance from the
+    # start, and the SAME structure is used to arrive on the destination floor.
+    s_transit, d_transit = _nearest_transit(s_floor, d_floor, *s_xy)
+    if not s_transit:
         raise ValueError(
-            f"No stairs defined for {s_floor}/{d_floor}; add a STAIRS row to locations.csv."
+            f"No transit (stairs/elevator) defined between {s_floor} and {d_floor}; "
+            f"add Transit rows to locations.csv."
         )
-    s_stair_xy = (int(s_stair['x']), int(s_stair['y']))
-    d_stair_xy = (int(d_stair['x']), int(d_stair['y']))
+    transit_name = s_transit['name']
+    s_transit_xy = (int(s_transit['x']), int(s_transit['y']))
+    d_transit_xy = (int(d_transit['x']), int(d_transit['y']))
 
-    pts1 = _path_points(s_floor, s_xy, s_stair_xy)
+    pts1 = _path_points(s_floor, s_xy, s_transit_xy)
     img1 = _draw_route(CORRIDORS[s_floor]["map_file"], pts1,
                        start_color="green", end_color="red")
-    pts2 = _path_points(d_floor, d_stair_xy, d_xy)
+    pts2 = _path_points(d_floor, d_transit_xy, d_xy)
     img2 = _draw_route(CORRIDORS[d_floor]["map_file"], pts2,
                        start_color="green", end_color="red")
 
     msg = (f"'{src['name']}' is on {s_floor} and '{dest['name']}' is on {d_floor}. "
-           f"On {s_floor}, follow the route to the stairs/elevator (red marker). "
-           f"Take them to {d_floor}, then follow the route from the stairs (green "
-           f"marker) to your destination. Two maps are returned, one per floor.")
+           f"On {s_floor}, follow the route to the {transit_name} (red marker). "
+           f"Take the {transit_name} to {d_floor}, then follow the route from there "
+           f"(green marker) to your destination. Two maps are returned, one per floor.")
     return msg, [(s_floor, img1), (d_floor, img2)]

@@ -50,14 +50,17 @@ def directions_test():
     print("[ok] unknown start/destination raise ValueError")
 
     # 6. Unit checks on the spine helpers.
-    assert library._nearest_waypoint("5F", 3360, 805)[0] == "ent"
+    assert library._nearest_waypoint("5F", 4065, 805)[0] == "ent"
     route = library._spine_route("5F", "ww_bot", "top_e")
     for wp in ("ww_mid", "ww_top", "top_w", "ent"):
         assert wp in route, f"{wp} missing from spine route {route}"
     pts = library._path_points("5F", (3360, 805), (700, 3200))
     assert all(pts[i] != pts[i + 1] for i in range(len(pts) - 1)), "duplicate consecutive points"
-    assert library._stairs_on("6F")["floor"] == "6F"
-    print(f"[ok] unit checks: spine route {route}")
+    # Cross-floor transit picks the structure nearest the start, same one on arrival.
+    s_t, d_t = library._nearest_transit("5F", "6F", 4065, 1270)  # from entrance
+    assert s_t and d_t and s_t["call_start"] == d_t["call_start"]
+    assert library._transit_options("6F"), "no 6F transit rows"
+    print(f"[ok] unit checks: spine route {route}; nearest transit from entrance = {s_t['name']}")
 
     print("All directions tests passed.")
 
