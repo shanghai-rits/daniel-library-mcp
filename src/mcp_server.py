@@ -73,10 +73,11 @@ def get_library_directions(destination: str, start: str = None) -> CallToolResul
         Text directions plus annotated floor-map image(s) (JPEG) showing the
         route -- green marker = start, red marker = destination. A trip that
         stays on one floor returns ONE map. A trip between 5F and 6F returns TWO
-        maps (one per floor) and routes via the nearest vertical connection --
-        stairs or the elevator, chosen by proximity (use this for accessibility
-        when the user needs the elevator). Always show every returned image, in
-        order, to the user.
+        maps (one per floor); the text names the EXACT vertical connection to
+        use (e.g. "Central Stairs", "West Stairs", or "Elevator"), chosen by
+        proximity. When relaying directions, name only that specific connection
+        -- do NOT say a vague "stairs/elevator" or invent a different one. Repeat
+        the floor names exactly as given and present every image, in order.
     """
     try:
         result_msg, images = library.get_directions(destination, start)

@@ -506,8 +506,14 @@ def get_directions(destination, start=None):
     img2 = _draw_route(CORRIDORS[d_floor]["map_file"], pts2,
                        start_color="green", end_color="red")
 
-    msg = (f"'{src['name']}' is on {s_floor} and '{dest['name']}' is on {d_floor}. "
-           f"On {s_floor}, follow the route to the {transit_name} (red marker). "
-           f"Take the {transit_name} to {d_floor}, then follow the route from there "
-           f"(green marker) to your destination. Two maps are returned, one per floor.")
+    direction = "up" if d_floor > s_floor else "down"
+    msg = (f"'{src['name']}' is on {s_floor} and '{dest['name']}' is on {d_floor}, "
+           f"so this trip changes floors using the {transit_name} (the same "
+           f"{transit_name} connects both floors). "
+           f"Step 1 ({s_floor} map): from the start (green marker), follow the route "
+           f"to the {transit_name} (red marker). "
+           f"Step 2: take the {transit_name} {direction} to {d_floor}. "
+           f"Step 3 ({d_floor} map): from the {transit_name} (green marker), follow "
+           f"the route to '{dest['name']}' (red marker). "
+           f"Do not mention any other stairs or elevator -- use only the {transit_name}.")
     return msg, [(s_floor, img1), (d_floor, img2)]

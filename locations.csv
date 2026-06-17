@@ -1,6 +1,6 @@
 type,name,call_start,call_end,floor,x,y,map_file
-Transit,"Main Stairs (by The Hub)",STAIRS_MAIN,STAIRS_MAIN,5F,4475,950,5f_base.jpg
-Transit,"Main Stairs (by The Hub)",STAIRS_MAIN,STAIRS_MAIN,6F,4450,1000,6f_base.jpg
+Transit,"Central Stairs",STAIRS_MAIN,STAIRS_MAIN,5F,4475,950,5f_base.jpg
+Transit,"Central Stairs",STAIRS_MAIN,STAIRS_MAIN,6F,4450,1000,6f_base.jpg
 Transit,"West Stairs",STAIRS_WEST,STAIRS_WEST,5F,770,950,5f_base.jpg
 Transit,"West Stairs",STAIRS_WEST,STAIRS_WEST,6F,770,900,6f_base.jpg
 Transit,"Elevator",ELEVATOR,ELEVATOR,5F,2565,950,5f_base.jpg
