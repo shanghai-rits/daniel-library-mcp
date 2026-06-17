@@ -222,6 +222,48 @@ def _nearest_waypoint(floor, x, y):
     return best_id, best_xy
 
 
+def _project_to_segment(p, a, b):
+    """Project point `p` onto segment a-b. Return (point_on_segment, dist2, t).
+
+    `t` is the clamped parameter in [0, 1] (0 = at a, 1 = at b). Lets a route
+    branch off a corridor at the closest point on an edge, not only at a node.
+    """
+    px, py = p
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 == 0:
+        t = 0.0
+    else:
+        t = ((px - ax) * dx + (py - ay) * dy) / seg2
+        t = max(0.0, min(1.0, t))
+    qx, qy = ax + t * dx, ay + t * dy
+    return (qx, qy), (px - qx) ** 2 + (py - qy) ** 2, t
+
+
+def _nearest_on_spine(floor, x, y):
+    """Snap (x, y) to the nearest point on any corridor edge.
+
+    Returns (edge, point, t): the (a, b) edge it landed on, the projected
+    point, and the parameter t along it. Falls back to the nearest waypoint
+    (as a degenerate edge) when the floor has no edges.
+    """
+    wps = CORRIDORS[floor]["waypoints"]
+    edges = CORRIDORS[floor]["edges"]
+    best = None
+    for a, b in edges:
+        if a not in wps or b not in wps:
+            continue
+        point, dist2, t = _project_to_segment((x, y), wps[a], wps[b])
+        if best is None or dist2 < best[0]:
+            best = (dist2, (a, b), point, t)
+    if best is None:
+        wid, wxy = _nearest_waypoint(floor, x, y)
+        return (wid, wid), wxy, 0.0
+    return best[1], best[2], best[3]
+
+
 def _spine_route(floor, start_wp, end_wp):
     """Return the list of waypoint ids from `start_wp` to `end_wp` (inclusive).
 
@@ -261,20 +303,82 @@ def _spine_route(floor, start_wp, end_wp):
 def _path_points(floor, start_xy, end_xy):
     """Build the full route polyline on a single floor.
 
-    start -> nearest start waypoint -> spine waypoints -> nearest end waypoint
-    -> end. Consecutive duplicate points are collapsed.
+    Each endpoint branches off the spine at the closest point on its nearest
+    *edge* (not the nearest node), so a route leaves the corridor right next to
+    the room instead of detouring to the nearest waypoint. The two branch points
+    are inserted as temporary nodes that split their host edges, and BFS over the
+    augmented graph yields the hallway route between them. Consecutive duplicate
+    points are collapsed.
     """
-    s_id, s_xy = _nearest_waypoint(floor, *start_xy)
-    e_id, e_xy = _nearest_waypoint(floor, *end_xy)
-    spine = _spine_route(floor, s_id, e_id)
-    wps = CORRIDORS[floor]["waypoints"]
+    wps = dict(CORRIDORS[floor]["waypoints"])
+    edges = list(CORRIDORS[floor]["edges"])
 
-    pts = [start_xy, s_xy] + [wps[w] for w in spine[1:-1]] + [e_xy, end_xy]
+    (sa, sb), s_proj, _ = _nearest_on_spine(floor, *start_xy)
+    (ea, eb), e_proj, _ = _nearest_on_spine(floor, *end_xy)
+
+    # Insert each branch point as a temporary node splitting its host edge.
+    def split_edge(edge, point, node_id):
+        a, b = edge
+        wps[node_id] = point
+        if a == b:                       # degenerate (no-edge fallback)
+            edges.append((node_id, a))
+            return
+        if (a, b) in edges:
+            edges.remove((a, b))
+        elif (b, a) in edges:
+            edges.remove((b, a))
+        edges.extend([(a, node_id), (node_id, b)])
+
+    split_edge((sa, sb), s_proj, "__start__")
+    end_anchor = "__end__"
+    if (ea, eb) == (sa, sb):
+        # Both branch onto the same edge -- route directly between the two
+        # projections without splitting twice.
+        wps[end_anchor] = e_proj
+        edges.append(("__start__", end_anchor))
+    else:
+        split_edge((ea, eb), e_proj, end_anchor)
+
+    route = _spine_route_on(wps, edges, "__start__", end_anchor)
+    pts = [start_xy] + [wps[w] for w in route] + [end_xy]
+
     out = [pts[0]]
     for p in pts[1:]:
         if p != out[-1]:
             out.append(p)
     return out
+
+
+def _spine_route_on(wps, edges, start_wp, end_wp):
+    """BFS over an explicit (waypoints, edges) graph; returns the id path.
+
+    Like _spine_route but operates on a caller-supplied graph so temporary
+    branch nodes can be routed through. Falls back to a direct hop if
+    disconnected.
+    """
+    if start_wp == end_wp:
+        return [start_wp]
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    queue = deque([start_wp])
+    prev = {start_wp: None}
+    while queue:
+        node = queue.popleft()
+        if node == end_wp:
+            break
+        for nxt in adj.get(node, []):
+            if nxt not in prev:
+                prev[nxt] = node
+                queue.append(nxt)
+    if end_wp not in prev:
+        return [start_wp, end_wp]
+    path, node = [], end_wp
+    while node is not None:
+        path.append(node)
+        node = prev[node]
+    return path[::-1]
 
 
 def _draw_route(map_file, points, start_color="green", end_color="red"):
