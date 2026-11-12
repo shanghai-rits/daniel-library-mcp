@@ -1,3 +1,29 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# MCP App view build artifacts (generated, do not commit)
+src/static/
+dev/preview.html
+# (schemas/ kept committed: snapshot guard against model drift)
+
+# dev/fixtures/ holds ad-hoc per-place RoutePlan dumps written while debugging
+# routing (route_n603.json, route_n606a.json, ...). They are regenerated on
+# demand from the live data, so they are not fixtures-of-record -- the pinned
+# ones live in src/test_route_schema.py / dev/viewer.test.js instead.
+dev/fixtures/
+
+# Generated review artifacts: headless view screenshots (dev/shoot_3d.py)
+# and wall-profile exports (dev/wall_audit.py --emit-json). Regenerate on
+# demand; never commit.
+review_out/
+extract_out/
+
+# VS Code: keep the shared MCP server wiring, drop personal editor state.
+# settings.json / launch.json routinely carry machine-absolute paths (venv
+# interpreter, debug cwd) -- exactly the leak .vscode/mcp.json was cleaned of
+# in f838938. NOTE: must be ".vscode/*", never ".vscode/" -- excluding the
+# directory itself stops git from ever descending into it, which silently
+# kills the "!" re-include below.
+.vscode/*
+!.vscode/mcp.json

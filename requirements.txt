@@ -1,2 +1,2 @@
-mcp==1.26.0
+mcp==1.26.0        # pinned to 1.x: 2.x renamed FastMCP->MCPServer and added a 4 MiB request-body limit; read MCP_APP_UPGRADE_PLAN.md section 7.2 before upgrading; install via `pip install -r requirements.txt` only, never a standalone `pip install -U mcp`
 Pillow==10.4.0

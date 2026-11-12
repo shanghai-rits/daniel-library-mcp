@@ -1,0 +1,7 @@
+# Dev-only tooling deps. Runtime dependencies stay in requirements.txt and
+# are the only ones installed by the Docker image.
+#
+# Playwright drives the deterministic 402px browser matrix in
+# dev/browser_test.py. Install the browser once with:
+#   python -m playwright install chromium
+playwright==1.64.1

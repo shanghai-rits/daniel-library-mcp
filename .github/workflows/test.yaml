@@ -1,0 +1,88 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Pre-generate static assets
+        run: python scripts/build_static.py
+
+      - name: Python tests
+        run: |
+          PYTHONPATH=src python src/test.py
+          PYTHONPATH=src python src/test_fallbacks.py
+          PYTHONPATH=src python src/test_route_schema.py
+          PYTHONPATH=src python src/test_api_contract.py
+          PYTHONPATH=src python src/test_route_pairs.py
+
+      - name: Route quality (walkable / reachable / efficient / points)
+        # Second opinion on the same routes, computed from the free space
+        # instead of from the router's own geometry -- see
+        # ROUTE_QUALITY_SPEC.md. Independent implementation on purpose: a
+        # test that shares its code with the code under test cannot catch a
+        # shared mistake.
+        run: PYTHONPATH=src python dev/route_quality.py
+
+      - name: Raster cross-check (independent of the vector wall tests)
+        run: PYTHONPATH=src python dev/xcheck_raster.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: View tests
+        run: node dev/viewer.test.js
+
+      - name: Docker build (startup self-check + static pregen)
+        run: docker build .
+
+  view-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Pre-generate view assets
+        run: |
+          python scripts/build_static.py
+          python scripts/build_preview.py
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Browser view tests (402px and responsive matrix)
+        run: PYTHONPATH=src python dev/browser_test.py
+
+      - name: Upload browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-view-artifacts
+          path: review_out/browser
+          if-no-files-found: ignore
+          retention-days: 7

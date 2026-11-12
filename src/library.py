@@ -1,16 +1,39 @@
 import csv
+import difflib
+import hashlib
 import heapq
 import io
 import json
-from PIL import Image, ImageDraw
+import math
 import os
 import re
-import difflib
+import sys
+from datetime import datetime, timezone
+from PIL import Image, ImageDraw
+
+import models
 
 # Config: absolute path based on project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE_DIR, 'locations.csv')
 CORRIDORS_FILE = os.path.join(BASE_DIR, 'corridors.json')
+# Data-side point relocation: keyed by place_id, applied once in _load_rows()
+# so all coordinate consumers share the same effective coords. locations.csv
+# itself is never modified (it is upstream data).
+OVERRIDES_FILE = os.path.join(BASE_DIR, 'src', 'route_overrides.json')
+# Floor map images live under maps/. Stored references (locations.csv column
+# and corridors.json "map_file") keep bare filenames; resolve them here.
+MAPS_DIR = os.path.join(BASE_DIR, 'maps')
+
+
+def map_path(map_file):
+    """Absolute path for a floor map image name (bare or subfoldered)."""
+    return os.path.join(MAPS_DIR, os.path.basename(map_file))
+
+# Kill-switch mirror (plan Step 6/L1): when "0", the image tools keep today's
+# exact JPEG bytes and no ui:// metadata is advertised. mcp_server.py reads
+# the same variable; the environment is the single source of truth.
+ENABLE_MCP_APPS = os.environ.get("ENABLE_MCP_APPS", "1") == "1"
 
 # A query "looks like a call number" when it is a Library of Congress style
 # class (1-3 letters) optionally followed by a number, e.g. QA76, PN, B105.3.
@@ -37,46 +60,28 @@ FLOOR_PREFIX_RE = re.compile(r'^[56]F\s+')
 # drawn wall, so the path stays in corridors and enters rooms through doorways.
 #
 # The spine and walls are authored visually in corridors.html and exported to
-# corridors.json; load_corridors() reads that file at import. The dict below is
-# only a fallback used when corridors.json is missing or unreadable.
-_FALLBACK_CORRIDORS = {
-    "5F": {
-        "map_file": "5f_base.jpg",
-        "waypoints": {
-            "ent": (4065, 805),     # top corridor, above the Entrance & Exit door
-            "top_w": (1500, 805),   # west end of the top corridor
-            "top_e": (5400, 805),   # east end of the top corridor
-            "ww_top": (300, 1540),  # west wing, top of the left-edge corridor
-            "ww_mid": (300, 2500),  # west wing, middle (W508-W517 column)
-            "ww_bot": (300, 3700),  # west wing, bottom (W518/W522 row)
-            "nrow": (3360, 1497),   # N51x classroom row
-        },
-        "edges": [
-            ("ent", "top_w"), ("ent", "top_e"), ("ent", "nrow"),
-            ("top_w", "ww_top"),
-            ("ww_top", "ww_mid"), ("ww_mid", "ww_bot"),
-        ],
-        "walls": [],
-    },
-    "6F": {
-        "map_file": "6f_base.jpg",
-        "waypoints": {
-            "stair": (770, 900),       # near the 6F staircase
-            "main": (4000, 900),       # central main-collection corridor
-            "gsr": (3100, 1483),       # group study room row (N601-N605)
-            "scholars": (6400, 700),   # east wing toward Scholars Space
-        },
-        "edges": [
-            ("stair", "main"), ("main", "gsr"), ("main", "scholars"),
-        ],
-        "walls": [],
-    },
-}
+# corridors.json. load_corridors() reads that file at import and RAISES if it
+# is missing or malformed -- deliberately no fallback: a stale inline guess
+# failing silently is more dangerous than refusing to start (the startup
+# self-check in selfcheck.py reports the problem first).
 
 # Routing tunables (full-res pixels).
 SAMPLE_STEP = 150        # spacing of branch-off candidates along each spine edge
 CONNECTOR_SLACK = 400    # accept visible connectors up to this much longer than the shortest
 WALL_PENALTY = 1000      # cost multiplier for a segment that crosses a wall
+# P5: walls count inflated by clearance in visibility/graph checks below.
+# SINGLE OWNER of the clearance policy: src/test.py and dev/xcheck_raster.py
+# import this value instead of re-typing it, and src/test.py asserts it still
+# matches the contract in ROUTE_QUALITY_SPEC.md (every segment >= 6px from a
+# wall). Changing the number here is a contract change -- update the spec in
+# the same commit or the gate fails on purpose.
+WALL_CLEARANCE_PX = 6
+# P5: endpoint epsilon — connectors may graze (not cross) walls within this
+# distance of a route endpoint (room entries sit in door gaps by design).
+# Must stay below the narrowest real doorway half-width (24.4px, 6F
+# calib_report) so it can never punch through a wall beside a door.
+# Single owner as well: the tests import this instead of copying 12.
+ENDPOINT_EPS = 12
 
 
 def _xy(v):
@@ -84,33 +89,82 @@ def _xy(v):
 
 
 def load_corridors():
-    """Load the corridor spine from corridors.json, falling back to the inline
-    dict if the file is missing or malformed.
+    """Load the corridor spine from corridors.json.
 
     JSON shape: {"5F": {"map_file": ..., "waypoints": {id: [x, y]},
     "edges": [[a, b]], "walls": [[[x1, y1], [x2, y2]]]}}.
     Point values may be [x, y] lists or {x, y} dicts; both normalize to tuples.
+
+    Raises FileNotFoundError if the file is missing and ValueError if it is
+    malformed. Called once at import (fail fast) and again by
+    _maybe_reload_corridors() when the file changes at runtime.
     """
     if not os.path.exists(CORRIDORS_FILE):
-        return _FALLBACK_CORRIDORS
+        raise FileNotFoundError(
+            f"corridors.json not found at {CORRIDORS_FILE}. Author it in "
+            "corridors.html; the server refuses to guess routes.")
     try:
         with open(CORRIDORS_FILE, encoding='utf-8') as f:
             raw = json.load(f)
-    except (ValueError, OSError):
-        return _FALLBACK_CORRIDORS
+    except (ValueError, OSError) as e:
+        raise ValueError(f"corridors.json invalid: {e}")
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("corridors.json has no floors")
 
     out = {}
     for floor, info in raw.items():
+        if not isinstance(info, dict):
+            raise ValueError(f"corridors[{floor}] is not an object")
+        for key in ('map_file', 'waypoints', 'edges'):
+            if key not in info:
+                raise ValueError(f"corridors[{floor}] missing {key!r}")
+        try:
+            waypoints = {wid: _xy(v) for wid, v in info.get('waypoints', {}).items()}
+            edges = [(a, b) for a, b in info.get('edges', [])]
+            walls = [(_xy(p), _xy(q)) for p, q in info.get('walls', [])]
+        except (TypeError, ValueError, KeyError, IndexError) as e:
+            raise ValueError(f"corridors[{floor}] malformed: {e}")
+        for a, b in edges:
+            if a not in waypoints or b not in waypoints:
+                raise ValueError(
+                    f"corridors[{floor}] edge ({a!r}, {b!r}) "
+                    "references unknown waypoint")
         out[floor] = {
             'map_file': info['map_file'],
-            'waypoints': {wid: _xy(v) for wid, v in info.get('waypoints', {}).items()},
-            'edges': [(a, b) for a, b in info.get('edges', [])],
-            'walls': [(_xy(p), _xy(q)) for p, q in info.get('walls', [])],
+            'waypoints': waypoints,
+            'edges': edges,
+            'walls': walls,
         }
-    return out or _FALLBACK_CORRIDORS
+    return out
 
 
 CORRIDORS = load_corridors()
+_CORRIDORS_MTIME = os.path.getmtime(CORRIDORS_FILE)
+
+
+def _maybe_reload_corridors():
+    """Hot-reload corridors.json if its mtime changed since the last load.
+
+    A failed reload keeps the previous (working) data and logs a warning --
+    it must never take down a serving process. The mtime is still advanced
+    past the bad file so one broken edit warns once, not once per request.
+    """
+    global CORRIDORS, _CORRIDORS_MTIME
+    try:
+        mtime = os.path.getmtime(CORRIDORS_FILE)
+    except OSError:
+        return
+    if mtime == _CORRIDORS_MTIME:
+        return
+    try:
+        fresh = load_corridors()
+    except (OSError, ValueError) as e:
+        print(f"warning: failed to reload corridors.json ({e}), "
+              "keeping previous data", file=sys.stderr)
+        _CORRIDORS_MTIME = mtime
+        return
+    CORRIDORS = fresh
+    _CORRIDORS_MTIME = mtime
 
 
 def _acronym(name):
@@ -154,11 +208,85 @@ def _base_name(row):
     return FLOOR_PREFIX_RE.sub('', row['name'].upper())
 
 
+_ROWS_CACHE = {'mtime': None, 'ov_mtime': None, 'rows': None}
+
+
+def _override_mtime():
+    try:
+        return os.path.getmtime(OVERRIDES_FILE)
+    except OSError:
+        return None
+
+
+def _apply_overrides(rows):
+    """Return rows with route_overrides.json ([place_id] -> [x, y]) applied.
+
+    Invalid keys/values are ignored here on purpose: unknown-key failures are
+    reported fail-fast by selfcheck at startup, and a bad deploy must not take
+    down a serving process mid-session.
+    """
+    try:
+        with open(OVERRIDES_FILE, mode='r', encoding='utf-8-sig') as f:
+            ov = json.load(f)
+    except (OSError, ValueError):
+        return rows
+    if not isinstance(ov, dict) or not ov:
+        return rows
+    id_to_idx = {pid: i for i, pid in enumerate(_assign_place_ids(rows))}
+    for pid, target in ov.items():
+        idx = id_to_idx.get(pid)
+        if idx is None:
+            continue
+        if not isinstance(target, (list, tuple)) or len(target) != 2:
+            continue
+        try:
+            x = float(target[0])
+            y = float(target[1])
+        except (TypeError, ValueError):
+            continue
+        row = rows[idx]
+        row['x'] = str(int(x)) if x == int(x) else repr(x)
+        row['y'] = str(int(y)) if y == int(y) else repr(y)
+    return rows
+
+
 def _load_rows():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with open(DATA_FILE, mode='r', encoding='utf-8-sig') as f:
-        return list(csv.DictReader(f))
+    """Read locations.csv (+route_overrides.json), hot-reloading on mtime change.
+
+    The cache key covers both files' mtimes so editing the override alone
+    triggers a refresh. Cached rows are the *effective* coordinates, shared by
+    every consumer. A failed reload keeps the previous (working) rows and logs
+    a warning. With no cache yet and no readable file, returns [] (the old
+    missing-file behavior).
+    """
+    try:
+        mtime = os.path.getmtime(DATA_FILE)
+    except OSError:
+        mtime = None
+    ov_mtime = _override_mtime()
+    cached = _ROWS_CACHE['rows']
+    if (cached is not None and _ROWS_CACHE['mtime'] == mtime
+            and _ROWS_CACHE['ov_mtime'] == ov_mtime):
+        return [dict(r) for r in cached]
+    rows = None
+    if mtime is not None:
+        try:
+            with open(DATA_FILE, mode='r', encoding='utf-8-sig') as f:
+                rows = list(csv.DictReader(f))
+        except (OSError, csv.Error) as e:
+            print(f"warning: failed to reload locations.csv ({e}), "
+                  "keeping previous data", file=sys.stderr)
+            _ROWS_CACHE['mtime'] = mtime
+            _ROWS_CACHE['ov_mtime'] = ov_mtime
+            return [dict(r) for r in cached] if cached is not None else []
+    elif cached is not None:
+        rows = cached
+    if rows is not None:
+        effective = _apply_overrides([dict(r) for r in rows])
+        _ROWS_CACHE['mtime'] = mtime
+        _ROWS_CACHE['ov_mtime'] = ov_mtime
+        _ROWS_CACHE['rows'] = effective
+    return [dict(r) for r in effective] if rows is not None else []
 
 
 def _pick_nearest(candidates, near):
@@ -179,7 +307,20 @@ def find_location(query, near=None):
     `near` is an optional (floor, x, y). When the query matches a Facility that
     exists in several places (e.g. restrooms on 5F and 6F) the instance nearest
     `near` is returned; naming a floor ("6F restroom") pins that one.
+
+    A stable place_id from search_locations (e.g. 'n607-6f') resolves
+    exactly to its row before any fuzzy strategy runs; identity pins the
+    instance, so `near` does not apply. Transit ids never resolve (routing
+    infrastructure, not lookup targets).
     """
+    raw_id = query.strip().lower()
+    if raw_id:
+        all_rows = _load_rows()
+        for r, pid in zip(all_rows, _assign_place_ids(all_rows)):
+            if pid == raw_id:
+                if r['type'].lower() == 'transit':
+                    return None
+                return r
     query = query.strip().upper()
     for pattern, repl in SYNONYMS:
         query = pattern.sub(repl, query)
@@ -268,7 +409,14 @@ def search_and_draw(query):
 
     try:
         x, y = int(location['x']), int(location['y'])
-        base_map_path = os.path.join(BASE_DIR, location['map_file'])
+        if ENABLE_MCP_APPS:
+            from views import floor_for_map, render_view
+            floor = floor_for_map(location['map_file'])
+            if floor is not None:
+                msg = (f"'{location['name']}' has been marked on the {location['floor']} floor map."
+                       f"{_other_floors_note(location)}")
+                return msg, render_view(floor, pin=(x, y))
+        base_map_path = map_path(location['map_file'])
 
         if not os.path.exists(base_map_path):
             raise FileNotFoundError(f"Base map {base_map_path} not found. Please check the filename.")
@@ -352,6 +500,51 @@ def _blocked(floor, a, b):
                for w1, w2 in CORRIDORS[floor].get("walls", []))
 
 
+def _seg_wall_dist(floor, a, b):
+    """Minimum distance from segment a-b to any wall on `floor`
+    (proper crossings read as 0.0)."""
+    best = float("inf")
+    for w1, w2 in CORRIDORS[floor].get("walls", []):
+        if _segments_cross(a, b, tuple(w1), tuple(w2)):
+            return 0.0
+        best = min(best, _pt_seg_dist(a, (tuple(w1)), (tuple(w2))),
+                   _pt_seg_dist(b, (tuple(w1)), (tuple(w2))),
+                   _pt_seg_dist(tuple(w1), a, b),
+                   _pt_seg_dist(tuple(w2), a, b))
+    return best
+
+
+def _pt_seg_dist(p, a, b):
+    px, py = p
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    l2 = dx * dx + dy * dy
+    t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _blocked_clear(floor, a, b):
+    """P5 clearance-aware block test: proper crossing OR approach within
+    WALL_CLEARANCE_PX. Routing visibility and graph costs use this; the raw
+    geometric crossing test stays in _blocked (tests assert on it)."""
+    if _blocked(floor, a, b):
+        return True
+    return _seg_wall_dist(floor, a, b) < WALL_CLEARANCE_PX
+
+
+def _blocked_beyond(floor, a, b, eps):
+    """Like _blocked_clear but ignoring everything within `eps` of `a`
+    (endpoint epsilon exemption: grazes near a room entry, never crossings
+    further out — callers must still require a clear remainder)."""
+    d = _dist(a, b)
+    if d <= eps:
+        return False
+    t = eps / d
+    c = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+    return _blocked_clear(floor, c, b)
+
+
 def _dijkstra(adj, start, end):
     """Shortest path over {node: [(neighbor, cost)]}; returns the node list or None."""
     dist = {start: 0.0}
@@ -375,7 +568,22 @@ def _dijkstra(adj, start, end):
     return None
 
 
-def _path_points(floor, start_xy, end_xy):
+def _connector_penalized(floor, p, n):
+    """True when the connector p->n was charged WALL_PENALTY by connect().
+
+    Mirrors connect()'s admission rule exactly: a connector that crosses a
+    wall is only ever used as the penalized fallback, and a connector that
+    violates the clearance band is charged the penalty unless the violation
+    sits inside ENDPOINT_EPS of the endpoint (the legitimate "you are
+    standing in the doorway" case).
+    """
+    if _blocked(floor, p, n):
+        return True
+    return _blocked_clear(floor, p, n) and _blocked_beyond(floor, p, n,
+                                                            ENDPOINT_EPS)
+
+
+def _path_points(floor, start_xy, end_xy, diag=None):
     """Build the full route polyline on a single floor, respecting walls.
 
     The spine is densified: every edge is split at evenly spaced sample points
@@ -386,7 +594,14 @@ def _path_points(floor, start_xy, end_xy):
     across open floor. Spine segments that cross a wall stay usable but carry a
     heavy penalty, so an incomplete wall set never disconnects the route.
     Dijkstra over this graph yields the path.
+
+    The optional `diag` dict receives P5 penalty diagnostics (plan section
+    2.4) without changing the return type: penalty_edges (C2: penalized
+    inner segments plus one per endpoint fallback), end_fallback (C3),
+    graph_fallback (C3b), epsilon_used. First/last polyline segments are
+    excluded from the edge count, mirroring the test's inner-segment rule.
     """
+    _maybe_reload_corridors()
     info = CORRIDORS[floor]
     wps = info["waypoints"]
     nodes = dict(wps)            # node id -> (x, y)
@@ -399,7 +614,7 @@ def _path_points(floor, start_xy, end_xy):
 
     def seg_cost(p, q):
         d = _dist(p, q)
-        return d * WALL_PENALTY if _blocked(floor, p, q) else d
+        return d * WALL_PENALTY if _blocked_clear(floor, p, q) else d
 
     # Densify spine edges into chains of short segments.
     seq = 0
@@ -425,47 +640,69 @@ def _path_points(floor, start_xy, end_xy):
     spine_ids = [n for n in nodes if n in adj] or list(wps)
 
     def connect(anchor, xy):
-        """Link `anchor` to the nearest visible point of each nearby spine edge;
-        return the shortest visible connector length (or None).
+        """Link `anchor` to the nearest visible point of each nearby spine edge.
 
-        One connector per edge keeps the route from cutting diagonally along
-        the corridor it joins; several edges let it pick the right corridor.
+        Returns (best, eps_used, fell_back): the shortest admitted connector
+        length (or None), whether the endpoint-epsilon exemption was used,
+        and whether nothing was even admissible (penalized fallback).
+
+        Admission is proper-crossing-free (a room entry must reach the
+        corridor through a doorway, grazing jambs if it must); clearance
+        violations on this endpoint hop only raise its cost, mirroring the
+        test's first/last-segment exemption. Sustained clearance discipline
+        lives in seg_cost, not here. One connector per edge keeps the route
+        from cutting diagonally along the corridor it joins.
         """
         nodes[anchor] = xy
         ranked = sorted(spine_ids, key=lambda n: _dist(xy, nodes[n]))
         best = None
         joined = set()
+        eps_used = False
         for n in ranked:
             d = _dist(xy, nodes[n])
             if best is not None and d > best + CONNECTOR_SLACK:
                 break
             if group.get(n) in joined:
                 continue
-            if not _blocked(floor, xy, nodes[n]):
-                best = d if best is None else best
-                joined.add(group.get(n))
-                link(anchor, n, d)
+            if _blocked(floor, xy, nodes[n]):
+                continue
+            if _blocked_clear(floor, xy, nodes[n]):
+                if _blocked_beyond(floor, xy, nodes[n], ENDPOINT_EPS):
+                    cost = d * WALL_PENALTY
+                else:
+                    cost = d
+                    eps_used = True
+            else:
+                cost = d
+            best = d if best is None else best
+            joined.add(group.get(n))
+            link(anchor, n, cost)
+        fell_back = False
         if best is None and ranked:
-            # Nothing visible (walls enclose the point): fall back to the
+            # Nothing admissible (walls enclose the point): fall back to the
             # nearest spine point, penalized like any wall crossing.
             n = ranked[0]
             link(anchor, n, _dist(xy, nodes[n]) * WALL_PENALTY)
-        return best
+            fell_back = True
+        return best, eps_used, fell_back
 
     if not spine_ids:
         return [start_xy, end_xy] if start_xy != end_xy else [start_xy]
 
-    s_best = connect("__start__", start_xy)
-    e_best = connect("__end__", end_xy)
+    s_best, s_eps, s_fell = connect("__start__", start_xy)
+    e_best, e_eps, e_fell = connect("__end__", end_xy)
 
     # Two points closer to each other than to the corridor (e.g. neighbours in
     # the same room) may walk straight across when nothing blocks the way.
     direct = _dist(start_xy, end_xy)
     if (s_best is not None and e_best is not None and direct <= s_best + e_best
-            and not _blocked(floor, start_xy, end_xy)):
+            and not _blocked_clear(floor, start_xy, end_xy)):
         link("__start__", "__end__", direct)
 
-    route = _dijkstra(adj, "__start__", "__end__") or ["__start__", "__end__"]
+    route = _dijkstra(adj, "__start__", "__end__")
+    graph_fallback = route is None
+    if graph_fallback:
+        route = ["__start__", "__end__"]
     pts = [nodes[n] for n in route]
 
     # Collapse duplicates and the collinear sample points along straight runs.
@@ -481,6 +718,31 @@ def _path_points(floor, start_xy, end_xy):
                 out[-1] = p
                 continue
         out.append(p)
+    if diag is not None:
+        segs = list(zip(out, out[1:]))
+        # Count penalized segments over ALL of them, not just the inner ones.
+        # The first and last polyline segments ARE the endpoint connectors
+        # that connect() may have charged WALL_PENALTY, so restricting the
+        # count to segs[1:-1] hid exactly the edges worth reporting -- and
+        # the clearance assertion skipped the same segments, so neither side
+        # of the test noticed.
+        penalized = 0
+        for i, (a, b) in enumerate(segs):
+            if i == 0:
+                if _connector_penalized(floor, a, b):
+                    penalized += 1
+            elif i == len(segs) - 1:
+                if _connector_penalized(floor, b, a):
+                    penalized += 1
+            elif _blocked_clear(floor, a, b):
+                penalized += 1
+        diag.update({
+            'penalty_edges': penalized + (1 if s_fell else 0)
+            + (1 if e_fell else 0),
+            'end_fallback': bool(s_fell or e_fell),
+            'graph_fallback': bool(graph_fallback),
+            'epsilon_used': bool(s_eps or e_eps),
+        })
     return out
 
 
@@ -490,8 +752,18 @@ def _draw_route(map_file, points, start_color="green", end_color="red"):
     The polyline is drawn twice -- a wide white casing then a narrower blue core
     -- so it stays legible over a busy, light-colored floor plan. Endpoint
     markers reuse the ellipse geometry from search_and_draw().
+
+    With ENABLE_MCP_APPS=1 this delegates to views.render_view (WebP, long
+    side <= 1600); with the flag off the original full-res JPEG path below
+    runs untouched (Step 6/L3 rollback: byte-identical to before).
     """
-    base_map_path = os.path.join(BASE_DIR, map_file)
+    if ENABLE_MCP_APPS:
+        from views import floor_for_map, render_view
+        floor = floor_for_map(map_file)
+        if floor is not None:
+            return render_view(floor, route=points,
+                               start_color=start_color, end_color=end_color)
+    base_map_path = map_path(map_file)
     if not os.path.exists(base_map_path):
         raise FileNotFoundError(f"Base map {base_map_path} not found. Please check the filename.")
 
@@ -522,37 +794,79 @@ def _transit_options(floor):
     """Return the list of inter-floor transit rows (stairs/elevator) on `floor`.
 
     Transit points are tagged type=Transit in locations.csv and paired across
-    floors by their call id (e.g. STAIRS_CENTRAL, ELEVATOR).
+    floors by their call id (e.g. STAIRS_MAIN, STAIRS_WEST, ELEVATOR).
     """
     return [r for r in _load_rows()
             if r['type'].lower() == 'transit' and r['floor'] == floor]
 
 
-def _nearest_transit(from_floor, to_floor, x, y):
-    """Pick the transit structure (stairs/elevator) nearest (x, y) on
-    `from_floor`, returning (from_row, to_row) for the same structure on the
-    destination floor. Returns (None, None) if none is available on both floors.
+def _nearest_transit(from_floor, to_floor, x, y, accessible_only=False,
+                     destination_xy=None):
+    """Pick a paired transit structure, considering the complete walking route.
+
+    With destination_xy, compare actual wall-aware walking lengths on both
+    floors, preferring routes without wall penalties or fallbacks. Without
+    a destination, retain the origin-only proximity lookup for callers that
+    only want the nearest transit point. Returns (None, None) if no pair exists.
+
+    With accessible_only=True, only the elevator is considered.
     """
     starts = _transit_options(from_floor)
     ends = {r['call_start']: r for r in _transit_options(to_floor)}
     candidates = [(s, ends[s['call_start']]) for s in starts if s['call_start'] in ends]
+    if accessible_only:
+        candidates = [(s, e) for s, e in candidates
+                      if s['call_start'] == 'ELEVATOR']
     if not candidates:
         return None, None
+    if destination_xy is not None:
+        def score(pair):
+            source, destination = pair
+            first_diag, second_diag = {}, {}
+            first = _path_points(
+                from_floor, (x, y), (int(source['x']), int(source['y'])),
+                first_diag)
+            second = _path_points(
+                to_floor, (int(destination['x']), int(destination['y'])),
+                destination_xy, second_diag)
+            unsafe = any(
+                diag.get('penalty_edges', 0) > 0
+                or diag.get('end_fallback') or diag.get('graph_fallback')
+                for diag in (first_diag, second_diag))
+            return (unsafe, _polyline_length(first) + _polyline_length(second))
+
+        return min(candidates, key=score)
     return min(
         candidates,
         key=lambda pair: (int(pair[0]['x']) - x) ** 2 + (int(pair[0]['y']) - y) ** 2,
     )
 
 
-def get_directions(destination, start=None):
-    """Generate walking directions and return (text_msg, [(floor, jpeg_bytes), ...]).
+def build_route(destination, start=None, accessible_only=False,
+                optimize_transit=True):
+    """Compute a walking route and return it as plain data (no images).
 
-    `start` defaults to the library Entrance & Exit. Same-floor trips return one
-    annotated map; cross-floor trips route via the stairs and return one map per
-    floor. A facility destination (restroom, printer, ...) resolves to the
-    instance nearest the start. Raises ValueError if either endpoint cannot be
-    resolved.
+    `start` defaults to the library Entrance & Exit. With accessible_only=True
+    only the elevator is used for floor changes. Returns route_data::
+
+        {'src': src_row, 'dest': dest_row,
+         'src_id': unique_start_id, 'dest_id': unique_destination_id,
+         'kind': 'already_there' | 'same_floor' | 'cross_floor',
+         'legs': [{'floor', 'map_file', 'points',
+                   'start_color', 'end_color'}, ...],
+         'transit': {'name', 'from_floor', 'to_floor', 'direction'} | None,
+         'msg': text_msg}
+
+    optimize_transit=False is reserved for the byte-frozen legacy image
+    rollback; normal routes minimize the complete cross-floor walk.
+    get_directions() renders the legs to JPEG; Step 3 serializes this dict.
+    Raises ValueError if either endpoint cannot be resolved.
     """
+    _maybe_reload_corridors()
+
+    all_rows = _load_rows()
+    idmap = _id_by_row(all_rows)
+
     if start:
         src = find_location(start)
         if not src:
@@ -569,31 +883,51 @@ def get_directions(destination, start=None):
     if not dest:
         raise ValueError(f"Destination not found for '{destination}'.")
 
+    src_id = _place_id_for(src, idmap)
+    dest_id = _place_id_for(dest, idmap)
     d_floor = dest['floor']
     d_xy = (int(dest['x']), int(dest['y']))
 
-    # Already there.
-    if src['name'] == dest['name']:
-        img = _draw_route(CORRIDORS[d_floor]["map_file"], [d_xy, d_xy],
-                          start_color="red", end_color="red")
+    # Already there means the same row, not merely the same display name:
+    # upstream data contains multiple distinct rooms/facilities with
+    # identical names on the same floor.
+    if src_id == dest_id:
         msg = f"You're already at '{dest['name']}' on the {d_floor} floor."
-        return msg, [(d_floor, img)]
+        return {'src': src, 'dest': dest, 'src_id': src_id, 'dest_id': dest_id,
+                'kind': 'already_there',
+                'legs': [{'floor': d_floor,
+                          'map_file': CORRIDORS[d_floor]["map_file"],
+                          'points': [d_xy, d_xy],
+                          'start_color': 'red', 'end_color': 'red',
+                          'diag': {'penalty_edges': 0, 'end_fallback': False,
+                                   'graph_fallback': False,
+                                   'epsilon_used': False}}],
+                'transit': None, 'msg': msg}
 
     # Same floor: a single routed map. State plainly that the trip stays on one
     # floor so the answer never invents a stairs/elevator step.
     if s_floor == d_floor:
-        pts = _path_points(s_floor, s_xy, d_xy)
-        img = _draw_route(CORRIDORS[s_floor]["map_file"], pts)
+        diag1 = {}
+        pts = _path_points(s_floor, s_xy, d_xy, diag1)
         msg = (f"'{src['name']}' and '{dest['name']}' are both on the {s_floor} "
                f"floor, so this is a single-floor walk -- no stairs or elevator "
                f"and no floor change are needed. Follow the route on the {s_floor} "
                f"map: green marker = start, red marker = destination.")
-        return msg, [(s_floor, img)]
+        return {'src': src, 'dest': dest, 'src_id': src_id, 'dest_id': dest_id,
+                'kind': 'same_floor',
+                'legs': [{'floor': s_floor,
+                          'map_file': CORRIDORS[s_floor]["map_file"],
+                          'points': pts,
+                          'start_color': 'green', 'end_color': 'red',
+                          'diag': diag1}],
+                'transit': None, 'msg': msg}
 
-    # Cross floor: route start -> nearest transit, then transit -> destination.
-    # The transit structure (stairs/elevator) is chosen by distance from the
-    # start, and the SAME structure is used to arrive on the destination floor.
-    s_transit, d_transit = _nearest_transit(s_floor, d_floor, *s_xy)
+    # Cross floor: compare the full walk through every paired transit, rather
+    # than choosing the stairs nearest the start in a straight line. Both
+    # legs must use the same structure; accessible trips consider elevators only.
+    s_transit, d_transit = _nearest_transit(s_floor, d_floor, *s_xy,
+                                            accessible_only=accessible_only,
+                                            destination_xy=d_xy if optimize_transit else None)
     if not s_transit:
         raise ValueError(
             f"No transit (stairs/elevator) defined between {s_floor} and {d_floor}; "
@@ -603,12 +937,9 @@ def get_directions(destination, start=None):
     s_transit_xy = (int(s_transit['x']), int(s_transit['y']))
     d_transit_xy = (int(d_transit['x']), int(d_transit['y']))
 
-    pts1 = _path_points(s_floor, s_xy, s_transit_xy)
-    img1 = _draw_route(CORRIDORS[s_floor]["map_file"], pts1,
-                       start_color="green", end_color="red")
-    pts2 = _path_points(d_floor, d_transit_xy, d_xy)
-    img2 = _draw_route(CORRIDORS[d_floor]["map_file"], pts2,
-                       start_color="green", end_color="red")
+    diag1, diag2 = {}, {}
+    pts1 = _path_points(s_floor, s_xy, s_transit_xy, diag1)
+    pts2 = _path_points(d_floor, d_transit_xy, d_xy, diag2)
 
     direction = "up" if d_floor > s_floor else "down"
     msg = (f"'{src['name']}' is on {s_floor} and '{dest['name']}' is on {d_floor}, "
@@ -620,4 +951,415 @@ def get_directions(destination, start=None):
            f"Step 3 ({d_floor} map): from the {transit_name} (green marker), follow "
            f"the route to '{dest['name']}' (red marker). "
            f"Do not mention any other stairs or elevator -- use only the {transit_name}.")
-    return msg, [(s_floor, img1), (d_floor, img2)]
+    return {'src': src, 'dest': dest, 'src_id': src_id, 'dest_id': dest_id,
+            'kind': 'cross_floor',
+            'legs': [{'floor': s_floor,
+                      'map_file': CORRIDORS[s_floor]["map_file"],
+                      'points': pts1,
+                      'start_color': 'green', 'end_color': 'red',
+                      'diag': diag1},
+                     {'floor': d_floor,
+                      'map_file': CORRIDORS[d_floor]["map_file"],
+                      'points': pts2,
+                      'start_color': 'green', 'end_color': 'red',
+                      'diag': diag2}],
+            'transit': {'name': transit_name, 'from_floor': s_floor,
+                        'to_floor': d_floor, 'direction': direction},
+            'msg': msg}
+
+
+def get_directions(destination, start=None):
+    """Generate walking directions and return (text_msg, [(floor, jpeg_bytes), ...]).
+
+    `start` defaults to the library Entrance & Exit. Same-floor trips return one
+    annotated map; cross-floor trips route via the stairs and return one map per
+    floor. A facility destination (restroom, printer, ...) resolves to the
+    instance nearest the start. Raises ValueError if either endpoint cannot be
+    resolved.
+    """
+    route = build_route(destination, start,
+                        optimize_transit=ENABLE_MCP_APPS)
+    images = [(leg['floor'],
+               _draw_route(leg['map_file'], leg['points'],
+                           start_color=leg['start_color'],
+                           end_color=leg['end_color']))
+              for leg in route['legs']]
+    return route['msg'], images
+
+
+# --- Structured data API (plan Step 3) ---------------------------------------
+# Pure-data counterparts of the image tools. find_location()/get_directions()
+# above are frozen (byte-level); the matcher below re-implements the same four
+# strategies in candidate-collecting form. The duplication is deliberate:
+# zero regression risk to the frozen paths.
+
+
+def _place_id(row):
+    """Stable place id: lowercased call_start + floor suffix (n607-6f), or the
+    normalized name when there is no call number."""
+    key = (row.get('call_start') or '').strip()
+    floor = (row.get('floor') or '').strip().lower()
+    if key and key.upper() != 'NULL':
+        base = key.lower()
+    else:
+        base = re.sub(r'[^a-z0-9]+', '-',
+                      (row.get('name') or '').lower()).strip('-')
+    return f'{base}-{floor}' if floor else base
+
+
+def _assign_place_ids(rows):
+    """Deterministic globally-unique place ids for a row list, CSV order.
+
+    Upstream data reuses call_starts ("PN") and facility names ("5F Fire
+    Exit"), so base ids collide; later duplicates get -2/-3/... suffixes.
+    Stable for a given file content; only the colliding group shifts when
+    the CSV changes.
+    """
+    counts = {}
+    ids = []
+    for r in rows:
+        base = _place_id(r)
+        n = counts.get(base, 0) + 1
+        counts[base] = n
+        ids.append(base if n == 1 else f"{base}-{n}")
+    return ids
+
+
+def _row_key(row):
+    """Content identity for a row returned by find_location().
+
+    _load_rows() returns fresh dict copies on every call, so object identity
+    cannot join a resolved row back to _assign_place_ids(). The upstream data
+    has no fully duplicated rows; these fields are the same ones used to
+    locate a place and remain stable after route_overrides are applied.
+    """
+    return tuple(str(row.get(k, '') or '') for k in (
+        'name', 'type', 'floor', 'x', 'y', 'call_start', 'call_end'))
+
+
+def _id_by_row(rows):
+    """Map content identity to the authoritative unique place id."""
+    return {_row_key(r): pid for r, pid in zip(rows, _assign_place_ids(rows))}
+
+
+def _place_id_for(row, idmap):
+    """Authoritative id for a resolved row.
+
+    A miss means the file changed between resolution and this lookup; fail
+    loudly instead of falling back to a colliding base id.
+    """
+    key = _row_key(row)
+    if key not in idmap:
+        raise ValueError("Location data changed while building the route; retry.")
+    return idmap[key]
+
+
+def _row_to_place(row, place_id=None):
+    call = (row.get('call_start') or '').strip() or None
+    if call is not None and call.upper() == 'NULL':
+        call = None
+    return models.Place(
+        id=place_id or _place_id(row),
+        name=row.get('name', ''),
+        type=row.get('type', ''),
+        floor=row.get('floor', ''),
+        point=[int(row['x']), int(row['y'])],
+        call_number=call,
+        other_floors=sorted(
+            {r['floor'] for r in facility_instances(row)}
+            - {row.get('floor')}),
+    )
+
+
+def _match_candidates(query, rows=None):
+    """All rows matching `query` as (all_rows_index, row, exact, score).
+
+    Same four strategies as find_location, but collecting every candidate
+    instead of first-hit: exact substring/acronym/call-range hits get
+    exact=True; fuzzy hits carry their best word score (> 0.7). The index
+    keys into the full (transit-included) row list so callers can align
+    stable place ids via _assign_place_ids on the same list.
+    """
+    q = query.strip().upper()
+    for pattern, repl in SYNONYMS:
+        q = pattern.sub(repl, q)
+    all_rows = rows if rows is not None else _load_rows()
+    indexed = [(j, r) for j, r in enumerate(all_rows)
+               if r['type'].lower() != 'transit']
+    out = []
+    fuzzy_best = 0.0
+    for i, r in indexed:
+        name = r['name'].upper()
+        call_id = _call_id(r)
+        if q in name or (call_id and q in call_id):
+            out.append((i, r, True, 1.0))
+            continue
+        if len(q) >= 2 and q == _acronym(name):
+            out.append((i, r, True, 1.0))
+            continue
+        words = name.replace('(', ' ').replace(')', ' ').split()
+        if call_id:
+            words.append(call_id)
+        best = max((difflib.SequenceMatcher(None, q, w).ratio()
+                    for w in words), default=0.0)
+        fuzzy_best = max(fuzzy_best, best)
+        if best > 0.7:
+            out.append((i, r, False, best))
+    # Strategy 4 (call-number range) runs only when nothing better matched,
+    # mirroring find_location, where it is unreachable after any exact hit
+    # or any fuzzy score above 0.7.
+    if not any(e for _, _, e, _ in out) and fuzzy_best <= 0.7 \
+            and CALL_NUMBER_RE.match(q):
+        qkey = _call_key(q)
+        for i, r in indexed:
+            if r['type'].lower() == 'shelf' and _call_id(r):
+                end = _call_id(r, 'call_end') or _call_id(r)
+                if _call_key(_call_id(r)) <= qkey <= _call_key(end):
+                    out.append((i, r, True, 1.0))
+    return out
+
+
+def search_locations(query, limit=5, types=None, near_floor=None):
+    """Search locations, returning a ranked candidate list (RoutePlan inputs).
+
+    Ranking is deterministic: exact hits in CSV order, then fuzzy hits by
+    score desc (CSV order breaks ties). `types` hard-filters (e.g.
+    ["Room"]); `near_floor` ("5F"/"6F") stably boosts same-floor hits.
+    Ids come from one _assign_place_ids pass over a single row load, so
+    search/detail always agree, even for duplicated base ids.
+    """
+    rows = _load_rows()
+    idmap = _assign_place_ids(rows)
+    cands = _match_candidates(query, rows)
+    if types:
+        wanted = {str(t).lower() for t in types}
+        cands = [c for c in cands if c[1].get('type', '').lower() in wanted]
+    total = len(cands)
+    exact = sum(1 for c in cands if c[2])
+    ranked = [c for c in cands if c[2]] + sorted(
+        (c for c in cands if not c[2]), key=lambda c: (-c[3], c[0]))
+    if near_floor:
+        nf = str(near_floor).upper()
+        ranked = sorted(
+            ranked, key=lambda c: c[1].get('floor', '').upper() != nf)
+    picked = ranked[:max(1, int(limit))]
+    return models.LocationSearchResult(
+        query=query,
+        matches=[models.LocationMatch(place=_row_to_place(r, idmap[j]),
+                                      exact=e, score=s)
+                 for j, r, e, s in picked],
+        total_matches=total,
+        exact_matches=exact)
+
+
+def get_location_detail(place_id):
+    """Full record for one place id (as returned by search_locations).
+
+    Unknown ids fail loudly AND point the way out: the error names the
+    closest matches and tells the caller to use search_locations, so a
+    model that passes a name ("N607") instead of an id ("n607-6f") can
+    recover in one more call instead of guessing.
+    """
+    rows = _load_rows()
+    idmap = _assign_place_ids(rows)
+    for r, pid in zip(rows, idmap):
+        if pid == place_id:
+            return _row_to_place(r, pid)
+    hints = _match_candidates(place_id, rows)[:3]
+    if hints:
+        sug = "; ".join(
+            f"{idmap[j]} ({r['name']})" for j, r, _, _ in hints)
+        raise ValueError(
+            f"Unknown place id '{place_id}'. Did you mean: {sug}? "
+            "Call search_locations to list valid ids.")
+    raise ValueError(
+        f"Unknown place id '{place_id}'. "
+        "Call search_locations to list valid ids.")
+
+
+_MAP_SIZES = {}
+
+
+def _map_size(floor):
+    if floor not in _MAP_SIZES:
+        path = map_path(CORRIDORS[floor]['map_file'])
+        with Image.open(path) as img:
+            _MAP_SIZES[floor] = [img.width, img.height]
+    return _MAP_SIZES[floor]
+
+
+def _leg_steps(kind, leg, origin, dest, transit, origin_id, dest_id):
+    """Per-leg human steps. Only start/transit/end kinds are emitted in
+    Step 3 (no door/corridor segmentation data exists yet); the schema
+    already accepts the finer kinds for Step 5.
+
+    `origin_id`/`dest_id` are the authoritative unique ids from
+    _assign_place_ids; rebuilding them with _place_id() loses -2/-3
+    suffixes and can point at a different same-named place.
+    """
+    pts = leg['points']
+    if kind == 'already_there':
+        return [models.RouteStep(
+            kind='end', point=[float(dest['x']), float(dest['y'])],
+            place_id=dest_id, label=dest['name'],
+            instruction=f"You're already at '{dest['name']}' "
+                        f"on the {dest['floor']} floor.")]
+    if kind == 'same_floor':
+        return [
+            models.RouteStep(
+                kind='start', point=[float(p) for p in pts[0]],
+                place_id=origin_id, label=origin['name'],
+                instruction=f"Start at {origin['name']}."),
+            models.RouteStep(
+                kind='end', point=[float(p) for p in pts[-1]],
+                place_id=dest_id, label=dest['name'],
+                instruction=f"Arrive at {dest['name']}."),
+        ]
+    # Cross floor: leg 0 ends at the transit, leg 1 starts from it.
+    starts_here = (pts[0][0] == int(origin['x'])
+                   and pts[0][1] == int(origin['y']))
+    if starts_here:
+        return [
+            models.RouteStep(
+                kind='start', point=[float(p) for p in pts[0]],
+                place_id=origin_id, label=origin['name'],
+                instruction=f"Start at {origin['name']}."),
+            models.RouteStep(
+                kind='transit', point=[float(p) for p in pts[-1]],
+                place_id=None, label=transit['name'],
+                instruction=f"Take the {transit['name']} "
+                            f"{transit['direction']} to {transit['to_floor']}."),
+        ]
+    return [
+        models.RouteStep(
+            kind='transit', point=[float(p) for p in pts[0]],
+            place_id=None, label=transit['name'],
+            instruction=f"Arrive on {transit['to_floor']} "
+                        f"at the {transit['name']}."),
+        models.RouteStep(
+            kind='end', point=[float(p) for p in pts[-1]],
+            place_id=dest_id, label=dest['name'],
+            instruction="You have arrived."),
+    ]
+
+
+def _polyline_length(pts):
+    return sum(((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+               for a, b in zip(pts, pts[1:]))
+
+
+def _leg_warnings(raw_legs):
+    """Surface router fallbacks in the public RoutePlan warnings.
+
+    The diagnostics are intentionally internal at the leg level (they are
+    not part of the schema), but silently discarding them lets a wall-
+    crossing or disconnected fallback look like a fully valid route. Each
+    flag gets one stable, human-readable warning.
+    """
+    out = []
+    for leg in raw_legs:
+        floor = leg.get('floor', 'unknown floor')
+        diag = leg.get('diag') or {}
+        penalised = int(diag.get('penalty_edges') or 0)
+        if penalised > 0:
+            out.append(
+                f"{floor}: route crosses a wall ({penalised} penalised "
+                "segment(s)); corridor walls may be incomplete")
+        if diag.get('end_fallback'):
+            out.append(
+                f"{floor}: no visible corridor point near a route endpoint; "
+                "used the nearest spine point")
+        if diag.get('graph_fallback'):
+            out.append(
+                f"{floor}: corridor graph is disconnected; drew a straight "
+                "line between the endpoints")
+        if diag.get('epsilon_used'):
+            out.append(
+                f"{floor}: route grazes a wall within the doorway epsilon "
+                f"({ENDPOINT_EPS}px) at a route endpoint")
+    return out
+
+
+def get_route(destination, start=None, accessible_only=False,
+              view_mode='3d'):
+    """Walking route as a RoutePlan (pure JSON, no images).
+
+    view_mode picks how the interactive view presents the plan: '3d' (the
+    default) renders an extruded model of the building with the route
+    floating above the wall tops; '2d' renders a flat floor plan.
+    """
+    route = build_route(destination, start,
+                        accessible_only=accessible_only)
+    origin = _row_to_place(route['src'], route['src_id'])
+    dest = _row_to_place(route['dest'], route['dest_id'])
+    legs = []
+    for leg in route['legs']:
+        poly = [[float(x), float(y)] for x, y in leg['points']]
+        transit = None
+        if route['transit'] is not None:
+            t = route['transit']
+            transit = models.TransitInfo(
+                id=re.sub(r'[^a-z0-9]+', '-', t['name'].lower()).strip('-'),
+                name=t['name'], from_floor=t['from_floor'],
+                to_floor=t['to_floor'], direction=t['direction'],
+                accessible='elevator' in t['name'].lower())
+        legs.append(models.RouteLeg(
+            floor=leg['floor'], map_file=leg['map_file'],
+            map_size=_map_size(leg['floor']), polyline=poly,
+            steps=_leg_steps(route['kind'], leg, route['src'], route['dest'],
+                             route['transit'], route['src_id'],
+                             route['dest_id']),
+            transit=(transit if leg == route['legs'][0]
+                     and route['kind'] == 'cross_floor' else None)))
+    names = [route['transit']['name']] if route['transit'] else []
+    totals = models.RouteTotals(
+        distance_px=sum(_polyline_length(leg['points'])
+                        for leg in route['legs']),
+        floor_changes=len(legs) - 1,
+        step_free=all('elevator' in n.lower() for n in names),
+        transits_used=names)
+    warnings = []
+    for leg in legs:
+        if not CORRIDORS[leg.floor].get('walls'):
+            warnings.append(
+                f"{leg.floor} has no wall segments marked; "
+                "the route may pass through walls")
+    warnings.extend(_leg_warnings(route['legs']))
+    plan_id = hashlib.sha1(
+        f"{route['src_id']}:{route['dest_id']}:{accessible_only}".encode()
+    ).hexdigest()[:12]
+    return models.RoutePlan(
+        plan_id=plan_id,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        origin=origin, destination=dest, totals=totals, legs=legs,
+        warnings=warnings, view_mode=view_mode)
+
+
+STATUS_FILE = os.path.join(BASE_DIR, 'status.json')
+
+
+def get_library_status(floor=None):
+    """Closure/status layer (design placeholder per plan).
+
+    Reads the optional status.json
+    ({"source": ..., "closures": [{"floor", "area", "reason", "until"}]}).
+    Missing file -> source "none" + empty list. No network, by design.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with open(STATUS_FILE, encoding='utf-8') as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return models.LibraryStatus(source='none', closures=[],
+                                    updated_at=now)
+    closures = []
+    for c in raw.get('closures', []):
+        if (floor is not None and c.get('floor') is not None
+                and c['floor'] != floor):
+            continue
+        closures.append(models.Alert(
+            floor=c.get('floor'), area=c.get('area', ''),
+            reason=c.get('reason', ''), until=c.get('until')))
+    return models.LibraryStatus(
+        source=raw.get('source', 'status.json'), closures=closures,
+        updated_at=now)

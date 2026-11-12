@@ -1,0 +1,11 @@
+# Keep build context lean: COPY . . must not drag these in.
+.git/
+__pycache__/
+*.pyc
+.DS_Store
+*.pdf
+*.ai
+dev/preview.html
+review_out/
+.vscode/
+.github/
